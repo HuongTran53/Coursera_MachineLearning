@@ -1,0 +1,194 @@
+---
+title: "main"
+author: "Huong Tran."
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction:
+In this assignment, we are going to use data from accelerometers on the belt, forearm,
+arm and dumbell to quantify how well people do a particular activity. There are 5 classes of activities: sitting-down, standing up, standing, walking and sitting.
+
+Load the packages:
+```{r}
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(corrplot)
+
+```
+
+
+# Data Exploration:
+Now, we are going to load the data provide on websites:
+```{r, cache=TRUE}
+training.url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testing.url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# create a directory for data:
+dir.create("data")
+download.file(training.url, destfile = "data/training.csv")
+download.file(testing.url, destfile = "data/testing.csv")
+
+training.orig <- read.csv("data/training.csv")
+testing.orig <- read.csv("data/testing.csv")
+
+```
+
+
+```{r, cache=TRUE}
+dim(training.orig)
+```
+```{r, cache=TRUE}
+dim(testing.orig)
+```
+There are 160 variables. While training set contains more than 19,000 observations, the testing set only have 20 observations. 
+However, the first column is index, which is not necessary for our prediction, we are able to drop them.
+
+```{r, cache=TRUE}
+delete_columns <- grepl("X|user_name|window|timestamp|max|min|var|avg|stddev|skewness|kurtosis|amplitude", names(training.orig))
+training <- training.orig[, !delete_columns]
+names(training)
+```
+
+
+All varialbes are numeric, while the last variables is our outcome "classe" is categorical variables.
+
+
+
+## Arms - relating variables:
+
+```{r}
+names(training)
+arm.names <- grepl("_arm", names(training))
+arm <- subset(training, select = arm.names)
+arm.cor <- cor(arm)
+corrplot::corrplot.mixed(arm.cor,
+                         number.cex = 0.75,
+                         tl.cex = 0.5,
+                         main = "Correlation matrix between variables relating to arm")
+```
+As, we can see, the infomation recorded at arm are correlated, but not too high.
+
+## Relation to activities:
+
+Now, we will use informative labels for the "classe":
+```{r}
+training$classe <- as.factor(training$classe)
+
+training$classe_info <- factor(training$classe, labels = c("sitting-down",
+                                                           "standing-up", 
+                                                           "standing",
+                                                           "walking",
+                                                           "sitting"))
+
+```
+
+
+```{r}
+g <- ggplot(training, aes(classe_info, roll_belt))
+g + geom_boxplot()
+```
+People who is sitting down yeild the value of "roll_belt" lower than other type of activities.
+
+
+# Data preprocess:
+Now we will split training set into traning and validation set:
+```{r}
+training <- training[, -ncol(training)]
+
+set.seed(123)
+inTrain <- createDataPartition(y=training$classe,p=0.8,list=FALSE)
+validation <- training[-inTrain,]
+training <- training[inTrain,]
+
+```
+
+Although we reduced elminate the unnecessary predictors, we still have 54 variables,
+which is very large. Now we will use PCA (principle component analysis) to reduce the number of predictors as well as highly correlated observations.
+```{r}
+prProc <- preProcess(training[,-ncol(training)], method = "pca",thresh = 0.8)
+trainPC <- predict(prProc, training)
+
+prProc$numComp
+```
+We reduce 53 variables into 13 variables.
+
+# Fit model with Random Forest:
+Random Forest perform pretty well in classification model, now we try to use Random Forest to predict the activities. Will both
+model with and without PCA to have a better comparsion.
+
+## Model without PCA:
+```{r, cache=TRUE}
+# We will use k-fold cross validation to resample data
+start.time <- Sys.time()
+mod.rf <- train(classe ~., method = "rf", data = training,
+              trControl = trainControl(method = "cv"), number = 3)
+end.time <- Sys.time()
+time.rf <- end.time - start.time
+cat("Training time is: ", time.rf)
+```
+
+Now, we are going to fit the model in validation set:
+
+```{r}
+pred.rf <- predict(mod.rf, validation)
+con.Matrix.rf <- confusionMatrix(pred.rf, validation$classe)
+
+rf.acc <- append(con.Matrix.rf$overall, time.rf)
+rf.acc <- data.frame(rf.acc) 
+row.names(rf.acc)[8] <- "time"
+names(rf.acc) <- "Random forest"
+```
+
+## Model without PCA
+```{r, cache=TRUE}
+start.time <- Sys.time()
+mod.rf.pca <- train(classe ~., method = "rf", data = trainPC,
+              trControl = trainControl(method = "cv"), number = 3)
+end.time <- Sys.time()
+time.pca <- end.time - start.time
+cat("Training time is: ", time.pca)
+```
+ 
+Fit model in validation set: 
+
+```{r}
+validationPC <- predict(prProc, validation)
+pred.pca <- predict(mod.rf.pca, validationPC)
+con.Matrix.pca <-confusionMatrix(pred.pca, validation$classe)
+
+pca.acc <- append(con.Matrix.pca$overall, time.pca)
+pca.acc <- data.frame(pca.acc) 
+row.names(pca.acc)[8] <- "time"
+names(pca.acc) <- "Random forest with PCA"
+
+```
+
+## Make comparsion between the two models:
+```{r}
+cbind.data.frame(rf.acc, pca.acc)
+```
+
+**Comment:** We use random forest with and withoug Principle Components. While using PCA yeilds lower accuracy on the validation set, but
+total  for trainin model is much more shorter. Howerver, the tradeoff is not too expensive, I recommend to use PCA before training random forest model to reduce the price.
+
+
+
+# Predict on testing set:
+```{r}
+validationPC <- predict(prProc, validation)
+testingPC <- predict(prProc, testing.orig)
+test.rf <- predict(mod.rf, testing.orig)
+test.rf <- as.character(test.rf)
+test.rf.pca <- as.character(predict(mod.rf.pca, testingPC))
+data.frame(rbind(test.rf, test.rf.pca))
+```
+
+They two model work well, but they are sensitive of classifying class A and B, which is sitting-down and standing-up.
+
